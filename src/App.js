@@ -1,183 +1,289 @@
-import { useState, useEffect, useRef } from 'react';
-import { VegaLite } from 'react-vega';
+import React, { useState, useEffect, useRef } from 'react';
 
-const url = process.env.NODE_ENV === 'production' ? 'https://assignment1humanai.onrender.com/' : 'http://127.0.0.1:8000/';
+const LoadingSpinner = () => (
+  <div className="w-5 h-5 border-2 border-white rounded-full border-t-transparent animate-spin" />
+);
 
-function App() {
-  const [message, setMessage] = useState('');
-  const [chatHistory, setChatHistory] = useState([
-    { type: 'bot', content: 'How can I help you today?' }
+const ReActAgent = () => {
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: 'Hello! I can help you analyze your data and create visualizations. Please upload a CSV file to begin.' }
   ]);
-  const [file, setFile] = useState(null);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
-  const [showTable, setShowTable] = useState(false);
-  const [columns, setColumns] = useState([]);
-  const [sampleData, setSampleData] = useState([]);
+  const [showTable, setShowTable] = useState(true);
+  const [tableData, setTableData] = useState({ columns: [], sample: [] });
+  const chatEndRef = useRef(null);
+  const chartIdRef = useRef(0);
 
-  const chatContainerRef = useRef(null);
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
-  // Scroll to the bottom when chat history updates
   useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    scrollToBottom();
+  }, [messages]);
+
+  const loadScript = (src) => {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  };
+
+  const handleVisualization = async (chartSpec, container) => {
+    try {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/vega/5.22.1/vega.min.js');
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/vega-lite/5.6.0/vega-lite.min.js');
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/vega-embed/6.21.0/vega-embed.min.js');
+      
+      container.innerHTML = '';
+      await window.vegaEmbed(container, chartSpec, {
+        actions: false,
+        theme: 'light',
+        renderer: 'svg'
+      });
+    } catch (error) {
+      console.error('Error rendering chart:', error);
+      container.innerHTML = 'Error rendering visualization';
     }
-  }, [chatHistory]);
+  };
 
-  // Handle CSV file upload
-  function handleFileUpload(e) {
-    const uploadedFile = e.target.files[0];
-    setFile(uploadedFile);
-  }
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('border-blue-500');
+    const file = e.dataTransfer.files[0];
+    if (file) await uploadFile(file);
+  };
 
-  // Upload the CSV file to the backend
-  function uploadCsv() {
-    if (!file) {
-      alert("Please select a CSV file first.");
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.currentTarget.classList.add('border-blue-500');
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove('border-blue-500');
+  };
+
+  const uploadFile = async (file) => {
+    if (!file || !file.name.endsWith('.csv')) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Please upload a CSV file.'
+      }]);
       return;
     }
 
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append('file', file);
+    setIsLoading(true);
 
-    fetch(`${url}upload-csv`, {
-      method: 'POST',
-      body: formData
-    })
-      .then(response => response.json())
-      .then(data => {
-        if (data.columns) {
-          setDataLoaded(true);
-          setColumns(data.columns);
-          setSampleData(data.sample_data);
-          setShowTable(true); // Show table after upload
-        } else {
-          alert(data.detail);
-        }
-      })
-      .catch(error => {
-        alert('Error uploading file');
+    try {
+      const response = await fetch('http://localhost:8000/upload-csv', {
+        method: 'POST',
+        body: formData
       });
-  }
+      const data = await response.json();
+      
+      setTableData({ columns: data.columns, sample: data.sample });
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `Data loaded successfully! I can now help you analyze these columns: ${data.columns.join(', ')}`
+      }]);
+      setDataLoaded(true);
+    } catch (error) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Error loading the file. Please try again.'
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-  // Send a message to the backend for visualization
-  function sendMessage() {
-    if (message === "") return;
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || !dataLoaded) return;
 
-    const newMessage = { type: 'user', content: message };
-    setChatHistory([...chatHistory, newMessage]);
+    const userMessage = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMessage]);
+    setInput('');
+    setIsLoading(true);
 
-    fetch(`${url}query`, {
-      method: 'POST',
-      body: JSON.stringify({ prompt: message }),
-      headers: {
-        'Content-Type': 'application/json'
+    try {
+      const response = await fetch('http://localhost:8000/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: input })
+      });
+      const data = await response.json();
+      
+      let assistantMessage;
+      if (typeof data.response === 'object' && !data.response.text) {
+        const chartId = `chart-${++chartIdRef.current}`;
+        assistantMessage = {
+          role: 'assistant',
+          content: 'Here is the visualization based on your request:',
+          chartSpec: data.response,
+          chartId
+        };
+      } else {
+        assistantMessage = {
+          role: 'assistant',
+          content: data.response.text || 'Here is what I found:'
+        };
       }
-    })
-      .then(response => response.json())
-      .then(data => {
-        const newResponse = { type: 'bot', content: 'Here is the generated chart.', vegaSpec: null };
+      
+      setMessages(prev => [...prev, assistantMessage]);
 
-        // Set VegaLite spec or add text to chat
-        if (data.response) {
-          try {
-            const vegaSpecParsed = JSON.parse(JSON.stringify(data.response));
-            if (vegaSpecParsed) {
-              newResponse.vegaSpec = vegaSpecParsed;  // Store Vega-Lite spec as part of the message
-            }
-          } catch (error) {
-            // If not valid JSON, handle as a text response
-            newResponse.content = data.response;
+      if (assistantMessage.chartSpec) {
+        setTimeout(() => {
+          const container = document.getElementById(assistantMessage.chartId);
+          if (container) {
+            handleVisualization(assistantMessage.chartSpec, container);
           }
-        }
+        }, 100);
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: 'Sorry, I encountered an error processing your request.'
+      }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-        setChatHistory(prevHistory => [...prevHistory, newResponse]);
-      })
-      .catch(error => {
-        const errorMessage = { type: 'bot', content: 'An error occurred while processing your request.' };
-        setChatHistory(prevHistory => [...prevHistory, errorMessage]);
-      });
-
-    setMessage(''); // Clear the input field after sending
-  }
+  const clearMessages = () => {
+    setMessages([{
+      role: 'assistant',
+      content: 'Hello! I can help you analyze your data and create visualizations. Please upload a CSV file to begin.'
+    }]);
+  };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
-      <div className="bg-white shadow-lg rounded-lg p-10 max-w-4xl w-full flex flex-col">
-
-        {/* File Upload Section */}
-        <h1 className="text-4xl font-bold text-center mb-6 text-gray-800">Data Visualization Assistant</h1>
-        <div className="border-2 border-dashed border-gray-300 p-6 mb-6 text-center">
-          <input type="file" onChange={handleFileUpload} className="mb-4" />
-          <button className="btn btn-primary" onClick={uploadCsv}>Upload CSV</button>
-        </div>
-
-        {/* Table display section */}
-        {dataLoaded && (
-          <div className="mb-6">
-            <button className="btn btn-secondary mb-4" onClick={() => setShowTable(!showTable)}>
-              {showTable ? 'Hide Table' : 'Show Table'}
-            </button>
-            {showTable && (
-              <div className="overflow-x-auto">
-                <h2 className="text-xl font-bold mb-4">CSV Data Preview</h2>
-                <table className="table-auto w-full text-left">
-                  <thead>
-                    <tr>
-                      {columns.map((col, index) => (
-                        <th key={index} className="px-4 py-2 border">{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sampleData.map((row, rowIndex) => (
-                      <tr key={rowIndex}>
-                        {columns.map((col, colIndex) => (
-                          <td key={colIndex} className="px-4 py-2 border">{row[col]}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Chat history */}
+    <div className="flex flex-col min-h-screen max-w-4xl mx-auto p-4">
+      <div className="mb-4">
         <div
-          ref={chatContainerRef}
-          className="flex-grow h-64 max-h-64 overflow-y-auto mb-6 p-4 bg-gray-50 rounded-lg shadow-inner"
+          className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center transition-colors hover:border-blue-500"
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
         >
-          {chatHistory.map((entry, index) => (
-            <div key={index} className={`mb-4 ${entry.type === 'user' ? 'text-right' : 'text-left'}`}>
-              <div className={`inline-block p-4 rounded-lg text-lg ${entry.type === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'}`}>
-                {entry.content}
-
-                {/* Render Vega-Lite chart if it's part of the bot response */}
-                {entry.vegaSpec && (
-                  <div className="mt-4" style={{ width: '300px', height: '300px' }}> {/* Fixed chart size */}
-                    <VegaLite spec={entry.vegaSpec} />
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Input section */}
-        <div className="flex">
           <input
-            type="text"
-            placeholder="Ask a question about your dataset..."
-            value={message}
-            className="input input-bordered w-full text-gray-900 text-lg p-4"
-            onInput={(e) => setMessage(e.target.value)}
+            type="file"
+            accept=".csv"
+            onChange={(e) => uploadFile(e.target.files?.[0])}
+            className="mb-2"
           />
-          <button className="btn btn-primary ml-4 text-lg px-6" onClick={sendMessage}>Send</button>
+          <p className="text-gray-500">Drag and drop a CSV file here or click to upload</p>
+        </div>
+      </div>
+
+      {dataLoaded && (
+        <div className="mb-4 flex space-x-2">
+          <button
+            onClick={() => setShowTable(!showTable)}
+            className="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded transition-colors"
+          >
+            {showTable ? 'Hide Table Preview' : 'Show Table Preview'}
+          </button>
+          <button
+            onClick={clearMessages}
+            className="bg-red-500 text-white hover:bg-red-600 px-4 py-2 rounded transition-colors"
+          >
+            Clear Messages
+          </button>
+        </div>
+      )}
+
+      {dataLoaded && showTable && (
+        <div className="mb-4 overflow-x-auto bg-white rounded-lg shadow">
+          <table className="min-w-full">
+            <thead>
+              <tr className="bg-gray-50">
+                {tableData.columns.map((column, index) => (
+                  <th key={index} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    {column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {tableData.sample.map((row, rowIndex) => (
+                <tr key={rowIndex} className="hover:bg-gray-50">
+                  {tableData.columns.map((column, colIndex) => (
+                    <td key={colIndex} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {row[column]}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex-1 bg-white rounded-lg shadow-sm" style={{ height: '600px' }}>
+        <div className="h-full flex flex-col">
+          <div className="flex-1 overflow-y-auto p-4">
+            {messages.map((message, index) => (
+              <div
+                key={index}
+                className={`mb-8 ${message.role === 'user' ? 'text-right' : 'text-left'}`}
+              >
+                <div
+                  className={`inline-block p-3 rounded-lg max-w-[80%] ${
+                    message.role === 'user'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 text-gray-800'
+                  }`}
+                >
+                  <div className="whitespace-pre-wrap">{message.content}</div>
+                  {message.chartSpec && (
+                    <div
+                      id={message.chartId}
+                      className="mt-4 mb-8 bg-white rounded p-4 shadow-sm"
+                      style={{ 
+                        width: '500px', 
+                        height: '300px',
+                        marginBottom: '2rem'
+                      }}
+                    />
+                  )}
+                </div>
+              </div>
+            ))}
+            <div ref={chatEndRef} className="h-8" />
+          </div>
+
+          <div className="border-t p-4">
+            <form onSubmit={handleSubmit} className="flex gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask a question about your data..."
+                className="flex-1 p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={!dataLoaded || isLoading}
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed min-w-[80px] flex items-center justify-center transition-colors"
+                disabled={!dataLoaded || isLoading}
+              >
+                {isLoading ? <LoadingSpinner /> : 'Send'}
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     </div>
   );
-}
+};
 
-export default App;
+export default ReActAgent;
