@@ -83,7 +83,7 @@ const ReActAgent = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/upload-csv', {
+      const response = await fetch('https://assignment1humanai-1.onrender.com/upload-csv', {
         method: 'POST',
         body: formData
       });
@@ -115,7 +115,7 @@ const ReActAgent = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/query', {
+      const response = await fetch('https://assignment1humanai-1.onrender.com/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: input })
